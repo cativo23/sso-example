@@ -1,0 +1,68 @@
+version: '3'
+
+networks:
+  intranet:
+    driver: bridge
+
+volumes:
+  hydra-mysql:
+    driver: local
+
+services:
+  hydra-migrate:
+    image: oryd/hydra:v1.11.10
+    depends_on:
+      - mysql
+    environment:
+      - DSN=mysql://${DB_USERNAME_HYDRA-hydra}:${DB_PASSWORD}@tcp(${DB_HOST}:${DB_PORT})/mysql?max_conns=20&max_idle_conns=4
+    command:
+      migrate -c /etc/config/hydra/hydra.yml sql -e --yes
+    volumes:
+      - ./hydra/hydra.yaml:/etc/config/hydra/hydra.yaml
+    restart: on-failure
+
+  hydra:
+    image: oryd/hydra:v1.11.10
+    depends_on:
+      - hydra-migrate
+    restart: unless-stopped
+    ports:
+      - 4444:4444
+      - 4445:4445
+      - 5555:5555
+    command: serve -c /etc/config/hydra.yaml --dev
+    volumes:
+      - ./hydra/hydra.yaml:/etc/config/hydra/hydra.yaml
+    environment:
+      - DSN=mysql://${DB_USERNAME_HYDRA-hydra}:${DB_PASSWORD}@tcp(${DB_HOST}:${DB_PORT})/mysql?max_conns=20&max_idle_conns=4
+
+  mysql:
+        image: 'mysql/mysql-server:8.0'
+        ports:
+            - '${FORWARD_DB_PORT:-3306}:3306'
+        environment:
+            MYSQL_ROOT_PASSWORD: '${DB_PASSWORD}'
+            MYSQL_ROOT_HOST: "%"
+            MYSQL_ALLOW_EMPTY_PASSWORD: 1
+            DB_DATABASE_HYDRA: '${DB_DATABASE_HYDRA-hydra}'
+            DB_USERNAME_HYDRA: '${DB_USERNAME_HYDRA-hydra}'
+            DB_PASSWORD: '${DB_PASSWORD}'
+        volumes:
+            - 'hydra-mysql:/var/lib/mysql'
+            - './mysql/create-databases.sh:/docker-entrypoint-initdb.d/10-create-databases.sh'
+        networks:
+            - intranet
+        healthcheck:
+            test: ["CMD", "mysqladmin", "ping", "-p${DB_PASSWORD}"]
+            retries: 3
+            timeout: 5s
+  
+  consent:
+    environment:
+      - HYDRA_ADMIN_URL=http://hydra:4445
+    image: oryd/hydra-login-consent-node:v1.11.10
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+    networks:
+      - intranet
